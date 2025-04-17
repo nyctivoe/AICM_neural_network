@@ -221,8 +221,8 @@ def train(X, y, parameters, learning_rate=0.01, epochs=1000, batch_size=100):
         
         epoch_loss /= num_batches
         
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch}, Loss: {epoch_loss:.4f}")
+        # if epoch % 10 == 0:
+        print(f"Epoch {epoch}, Loss: {epoch_loss:.4f}")
     
     return parameters
 
