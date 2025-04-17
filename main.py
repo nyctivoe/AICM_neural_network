@@ -16,26 +16,71 @@ def read_mnist_csv(filepath):
     
     return X, Y
 
-def mnist_visualize(data, index=0, num_images=5, figsize=(10, 2)):
+def mnist_visualize(
+        data,
+        index: int = 0,
+        num_images: int = 10,
+        cols: int = 5,
+        figsize: tuple | None = None,
+        titles: list[str] | None = None,   # optional custom titles (e.g. predictions)
+        cmap: str = "gray",
+        title_fmt: str = "Label: {}",
+        title_fontsize: int = 10,
+        h_pad: float = 1.0,
+        w_pad: float = 0.3,
+):
+    """
+    Nicely grid‑plots MNIST digits without overlapping text.
+
+    Args
+    ----
+    data        : tuple (X, y) from `read_mnist_csv`
+    index       : starting index in the dataset
+    num_images  : how many images to show
+    cols        : images per row in the grid
+    figsize     : (width, height) of the entire figure; if None, computed automatically
+    titles      : optional list of strings (same length as num_images) to put above each image
+                  – useful for showing predictions
+    cmap        : matplotlib colormap
+    title_fmt   : format string applied to ground‑truth label when `titles` is None
+    title_fontsize : font size of per‑panel titles
+    h_pad, w_pad: padding between subplots (passed to `tight_layout`)
+    """
+
     X, y = data
-    fig, axes = plt.subplots(1, num_images, figsize=figsize)
-    
+    rows = int(np.ceil(num_images / cols))
+
+    if figsize is None:
+        figsize = (2.2 * cols, 2.4 * rows)   # scales with grid size
+
+    fig, axes = plt.subplots(rows, cols, figsize=figsize, squeeze=False)
+    axes = axes.flatten()
+
     for i in range(num_images):
-        if num_images == 1:
-            ax = axes
-        else:
-            ax = axes[i]
-            
         img_idx = index + i
+        ax = axes[i]
+
         if img_idx < len(X):
             img = X[img_idx].reshape(28, 28)
+            ax.imshow(img, cmap=cmap)
             
-            ax.imshow(img, cmap='gray')
-            ax.set_title(f"Label: {y[img_idx]}")
-            ax.axis('off')
-    
-    plt.tight_layout()
+            # Choose title
+            if titles is not None:
+                title = titles[i]
+            else:
+                title = title_fmt.format(y[img_idx])
+
+            ax.set_title(title, fontsize=title_fontsize, pad=6)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    # Hide any leftover blank axes
+    for j in range(num_images, rows * cols):
+        axes[j].axis("off")
+
+    plt.tight_layout(h_pad=h_pad, w_pad=w_pad)
     plt.show()
+
 
 def initialize_parameters():
     np.random.seed(42)
