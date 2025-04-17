@@ -1,80 +1,50 @@
-from turtle import forward
-import numpy as np # heheheha
-import matplotlib.pyplot as plt # for plotting
-import pandas as pd # reading csv files
+"""
+Minimal MNIST MLP with **joblib**‑based data‑parallel training.
+Copy‑paste into a single .py file, `pip install joblib pandas matplotlib`, and run.
+"""
 
-def read_mnist_csv(filepath):
+# ─────────────── imports ───────────────
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from copy import deepcopy
+
+from joblib import Parallel, delayed      # <─ NEW
+
+# ─────────────── data helpers ───────────────
+def read_mnist_csv(filepath: str):
     df = pd.read_csv(filepath)
-    
-    y = df.iloc[:, 0].values
-    Y = np.zeros((y.shape[0], 10))
-    for i in range(y.shape[0]):
-        Y[i, y[i]] = 1.0
-    X = df.iloc[:, 1:].values
-    
-    X = X / 255.0
-    
+    y  = df.iloc[:, 0].values
+    Y  = np.zeros((y.shape[0], 10))
+    Y[np.arange(y.shape[0]), y] = 1.0
+
+    X  = df.iloc[:, 1:].values.astype(np.float32) / 255.0
     return X, Y
 
+
 def mnist_visualize(
-        data,
-        index: int = 0,
-        num_images: int = 10,
-        cols: int = 5,
-        figsize: tuple | None = None,
-        titles: list[str] | None = None,   # optional custom titles (e.g. predictions)
-        cmap: str = "gray",
-        title_fmt: str = "Label: {}",
-        title_fontsize: int = 10,
-        h_pad: float = 1.0,
-        w_pad: float = 0.3,
+    data, index=0, num_images=10, cols=5,
+    figsize=None, titles=None,
+    cmap="gray", title_fmt="Label: {}", title_fontsize=10,
+    h_pad=1.0, w_pad=0.3,
 ):
-    """
-    Nicely grid‑plots MNIST digits without overlapping text.
-
-    Args
-    ----
-    data        : tuple (X, y) from `read_mnist_csv`
-    index       : starting index in the dataset
-    num_images  : how many images to show
-    cols        : images per row in the grid
-    figsize     : (width, height) of the entire figure; if None, computed automatically
-    titles      : optional list of strings (same length as num_images) to put above each image
-                  – useful for showing predictions
-    cmap        : matplotlib colormap
-    title_fmt   : format string applied to ground‑truth label when `titles` is None
-    title_fontsize : font size of per‑panel titles
-    h_pad, w_pad: padding between subplots (passed to `tight_layout`)
-    """
-
     X, y = data
     rows = int(np.ceil(num_images / cols))
-
     if figsize is None:
-        figsize = (2.2 * cols, 2.4 * rows)   # scales with grid size
+        figsize = (2.2 * cols, 2.4 * rows)
 
     fig, axes = plt.subplots(rows, cols, figsize=figsize, squeeze=False)
     axes = axes.flatten()
 
     for i in range(num_images):
-        img_idx = index + i
         ax = axes[i]
-
+        img_idx = index + i
         if img_idx < len(X):
-            img = X[img_idx].reshape(28, 28)
-            ax.imshow(img, cmap=cmap)
-            
-            # Choose title
-            if titles is not None:
-                title = titles[i]
-            else:
-                title = title_fmt.format(y[img_idx])
-
+            ax.imshow(X[img_idx].reshape(28, 28), cmap=cmap)
+            title = titles[i] if titles is not None else title_fmt.format(np.argmax(y[img_idx]))
             ax.set_title(title, fontsize=title_fontsize, pad=6)
-        ax.set_xticks([])
-        ax.set_yticks([])
+        ax.set_xticks([]), ax.set_yticks([])
 
-    # Hide any leftover blank axes
     for j in range(num_images, rows * cols):
         axes[j].axis("off")
 
@@ -82,173 +52,146 @@ def mnist_visualize(
     plt.show()
 
 
-def initialize_parameters():
-    np.random.seed(42)
+# ─────────────── network core ───────────────
+def initialize_parameters(seed=42):
+    np.random.seed(seed)
+    W1 = np.random.randn(784, 20) * 0.01
+    b1 = np.zeros((1, 20))
+    W2 = np.random.randn(20, 20) * 0.01
+    b2 = np.zeros((1, 20))
+    W3 = np.random.randn(20, 10) * 0.01
+    b3 = np.zeros((1, 10))
+    return {"w1": W1, "b1": b1,
+            "w2": W2, "b2": b2,
+            "w3": W3, "b3": b3}
 
-    input_size = 784  
-    hidden_size1 = 20
-    hidden_size2 = 20
-    output_size = 10
 
-    W1 = np.random.rand(input_size, hidden_size1) * 0.01
-    b1 = np.zeros((1, hidden_size1))
-    
-    W2 = np.random.rand(hidden_size1, hidden_size2) * 0.01
-    b2 = np.zeros((1, hidden_size2))
-    
-    W3 = np.random.rand(hidden_size2, output_size) * 0.01
-    b3 = np.zeros((1, output_size))
-    
-    parameters = {"w1": W1, "b1": b1,
-                  "w2": W2, "b2": b2,
-                  "w3": W3, "b3": b3}
-    
-    return parameters
-
-def normalize_output(z):
-    out = z - np.max(z, axis=1, keepdims=True)
-    exp_z = np.exp(out)
-    return exp_z / np.sum(exp_z, axis=1, keepdims=True)
-
-def PReLU(z):
+def PReLU(z):                 # parametric ReLU with α=0.001
     return np.where(z > 0, z, 0.001 * z)
 
-def forward_propagation(X, y, parameters, debug=True):
-    w1, b1 = parameters["w1"], parameters["b1"]
-    w2, b2 = parameters["w2"], parameters["b2"]
-    w3, b3 = parameters["w3"], parameters["b3"]
 
-    z1 = X @ w1 + b1
-    a1 = PReLU(z1)
+def normalize_output(z):      # softmax
+    z = z - np.max(z, axis=1, keepdims=True)
+    ez = np.exp(z)
+    return ez / np.sum(ez, axis=1, keepdims=True)
 
-    z2 = a1 @ w2 + b2
-    a2 = PReLU(z2)
 
-    z3 = a2 @ w3 + b3
-    a3 = PReLU(z3)
-    
-    output = normalize_output(a3)
-    
+def forward_propagation(X, y, params, debug=False):
+    a1 = PReLU(X @ params["w1"] + params["b1"])
+    a2 = PReLU(a1 @ params["w2"] + params["b2"])
+    a3 = PReLU(a2 @ params["w3"] + params["b3"])
+    out = normalize_output(a3)
+
     if debug:
-        print("it is:", np.argmax(output, axis=1))
-        print("it should be:", y)
-    
-    cache = {
-        "z1": z1, "a1": a1,
-        "z2": z2, "a2": a2,
-        "z3": z3, "a3": a3,
-        "output": output
-    }
-    
-    return output, cache
+        print("pred :", np.argmax(out, axis=1))
+        print("label:", np.argmax(y,  axis=1))
 
-def backward_propagation(X, y, parameters, cache):
-    w1, b1 = parameters["w1"], parameters["b1"]
-    w2, b2 = parameters["w2"], parameters["b2"]
-    w3, b3 = parameters["w3"], parameters["b3"]
-    
-    a1, a2 = cache["a1"], cache["a2"]
-    output = cache["output"]
-    
+    cache = {"a1": a1, "a2": a2, "output": out}
+    return out, cache
+
+
+def backward_propagation(X, y, params, cache):
+    a1, a2, out = cache["a1"], cache["a2"], cache["output"]
     m = X.shape[0]
-    
-    delta3 = output - y
-    dw3 = np.dot(a2.T, delta3) / m
-    db3 = np.sum(delta3, axis=0, keepdims=True) / m
-    
-    delta2 = np.dot(delta3, w3.T) * (a2 > 0)
-    dw2 = np.dot(a1.T, delta2) / m
-    db2 = np.sum(delta2, axis=0, keepdims=True) / m
-    
-    delta1 = np.dot(delta2, w2.T) * (a1 > 0)
-    dw1 = np.dot(X.T, delta1) / m
-    db1 = np.sum(delta1, axis=0, keepdims=True) / m
-    
-    grads = {"dw1": dw1, "db1": db1,
-             "dw2": dw2, "db2": db2,
-             "dw3": dw3, "db3": db3}
-    
-    return grads
 
-def cost(y, y_hat): 
-    """
-    Implements the L2 Cost Function
+    δ3   = out - y                            # (m,10)
+    dw3  = a2.T @ δ3 / m
+    db3  = np.sum(δ3, axis=0, keepdims=True) / m
 
-    Args:
-        y (numpy.ndarray): intended labels
-        y_hat (numpy.ndarray): network labels
+    δ2   = (δ3 @ params["w3"].T) * (a2 > 0)
+    dw2  = a1.T @ δ2 / m
+    db2  = np.sum(δ2, axis=0, keepdims=True) / m
 
-    Returns:
-        loss (float): L2 cost function value
-    """
-    loss = np.mean(np.sum((y - y_hat) ** 2, axis=1)) / 2.0
-    return loss
+    δ1   = (δ2 @ params["w2"].T) * (a1 > 0)
+    dw1  = X.T @ δ1 / m
+    db1  = np.sum(δ1, axis=0, keepdims=True) / m
 
-parameters = initialize_parameters()
+    return {"dw1": dw1, "db1": db1,
+            "dw2": dw2, "db2": db2,
+            "dw3": dw3, "db3": db3}
 
-def train(X, y, parameters, learning_rate=0.01, epochs=1000, batch_size=100):
+
+def cost(y, y_hat):                         # L2 loss
+    return 0.5 * np.mean(np.sum((y - y_hat) ** 2, axis=1))
+
+
+# ─────────────── parallel helpers ───────────────
+def _batch_gradients(X_b, y_b, params_snapshot):
+    out, cache = forward_propagation(X_b, y_b, params_snapshot, debug=False)
+    grads = backward_propagation(X_b, y_b, params_snapshot, cache)
+    return grads, cost(y_b, out)
+
+
+def _aggregate(grads_list):
+    agg = {}
+    for k in grads_list[0]:
+        agg[k] = np.mean([g[k] for g in grads_list], axis=0)
+    return agg
+
+
+# ─────────────── training loop (data‑parallel) ───────────────
+def train(
+    X, y, params,
+    learning_rate=0.02,
+    epochs=100,
+    batch_size=128,
+    n_jobs=-1,                       # ← #CPU cores (‑1 = all)
+):
     m = X.shape[0]
-    num_batches = m // batch_size
-    
+    num_batches = (m + batch_size - 1) // batch_size
+
     for epoch in range(epochs):
-        epoch_loss = 0
-        
-        # Shuffle data
-        indices = np.random.permutation(m)
-        X_shuffled = X[indices]
-        y_shuffled = y[indices]
-        
-        for batch in range(num_batches):
-            start_idx = batch * batch_size
-            end_idx = min((batch + 1) * batch_size, m)
-            
-            X_batch = X_shuffled[start_idx:end_idx]
-            y_batch = y_shuffled[start_idx:end_idx]
-            
-            # Forward pass
-            output, cache = forward_propagation(X_batch, y_batch, parameters, debug=False)
-            
-            # Backward pass
-            grads = backward_propagation(X_batch, y_batch, parameters, cache)
-            
-            # Update parameters
-            for key in parameters.keys():
-                parameters[key] -= learning_rate * grads["d" + key]
-            
-            # Calculate loss
-            batch_loss = cost(y_batch, output)
-            epoch_loss += batch_loss
-        
-        epoch_loss /= num_batches
-        
-        # if epoch % 10 == 0:
-        print(f"Epoch {epoch}, Loss: {epoch_loss:.4f}")
-    
-    return parameters
+        perm = np.random.permutation(m)
+        X, y = X[perm], y[perm]
 
-def check(n):
-    X_test = Xs[:n]
-    y_test = ys[:n]
-    
-    output, cache = forward_propagation(X_test, y_test, parameters, debug=False)
-    predictions = np.argmax(output, axis=1)
-    
-    if y_test.ndim > 1:
-        actual = np.argmax(y_test, axis=1)
-    else:
-        actual = y_test
-    
-    correct = np.sum(predictions == actual)
-    print(f"Accuracy: {correct}/{n} ({correct/n*100:.2f}%)")
-    print(f"Predictions: {predictions}")
-    print(f"Actual: {actual}")
+        # build batch index ranges once per epoch
+        bounds = [(i*batch_size, min((i+1)*batch_size, m))
+                  for i in range(num_batches)]
 
-train_data = read_mnist_csv('mnist_train.csv')
-test_data = read_mnist_csv('mnist_test.csv')
-Xs, ys = train_data
+        # run all batches in parallel workers
+        snapshot = deepcopy(params)       # read‑only in workers
+        results  = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(_batch_gradients)(X[s:e], y[s:e], snapshot)
+            for (s, e) in bounds
+        )
 
-mnist_visualize(train_data, index=0, num_images=10, figsize=(10, 2))
+        grads_list, losses = zip(*results)
+        mean_grads = _aggregate(grads_list)
 
-parameters = initialize_parameters()
-parameters = train(Xs, ys, parameters, learning_rate=0.02, epochs=100, batch_size=64)
-check(100)
+        for k in params:                  # synchronous SGD update
+            params[k] -= learning_rate * mean_grads["d" + k]
+
+        if epoch % 10 == 0 or epoch == epochs - 1:
+            print(f"Epoch {epoch:3d} | loss = {np.mean(losses):.4f}")
+
+    return params
+
+
+# ─────────────── evaluation helper ───────────────
+def check(X_test, y_test, params):
+    out, _ = forward_propagation(X_test, y_test, params, debug=False)
+    preds  = np.argmax(out, axis=1)
+    true   = np.argmax(y_test, axis=1)
+    acc    = (preds == true).mean()
+    print(f"Accuracy: {acc*100:.2f}%  ({preds.sum()} / {len(true)})")
+
+
+# ─────────────── main script ───────────────
+if __name__ == "__main__":
+    train_data = read_mnist_csv("mnist_train.csv")
+    test_data  = read_mnist_csv("mnist_test.csv")
+    X_train, y_train = train_data
+    X_test,  y_test  = test_data
+
+    mnist_visualize(train_data, num_images=12, cols=6)
+
+    params = initialize_parameters()
+    params = train(
+        X_train, y_train, params,
+        learning_rate=0.02,
+        epochs=100,
+        batch_size=64,
+        n_jobs=-1                # use all CPU cores
+    )
+
+    check(X_test[:1000], y_test[:1000], params)
