@@ -202,6 +202,8 @@ train_data = read_mnist_csv('mnist_train.csv')
 test_data = read_mnist_csv('mnist_test.csv')
 Xs, ys = train_data
 
+mnist_visualize(train_data, index=0, num_images=10, figsize=(10, 2))
+
 parameters = initialize_parameters()
 parameters = train(Xs, ys, parameters, learning_rate=0.02, epochs=100, batch_size=64)
 check(100)
